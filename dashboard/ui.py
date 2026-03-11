@@ -1,11 +1,12 @@
 """
-JDASS Streamlit Dashboard.
+JDASS Streamlit Dashboard — redesigned.
 
-Reads directly from the SQLite DB (no API server required).
-Three pages:
-  1. Jobs        — browse discovered jobs, view JD + score breakdown
-  2. Applications — track applied jobs, update status, view resumes
-  3. Stats        — charts: score distribution, tech frequency, timeline
+Pages:
+  🚀 Discover    — run discovery pipeline with configurable filters
+  🔍 Jobs        — browse + filter discovered jobs, view JD + score breakdown
+  📋 Applications — track applied jobs, update status, download resumes
+  📊 Stats        — score distribution, tech frequency, pipeline funnel
+  ✅ Review       — confirm/edit LLM-guessed form answers
 
 Run:
     make dashboard
@@ -53,11 +54,44 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Tighten sidebar padding */
+[data-testid="stSidebar"] { padding-top: 1rem; }
+/* Metric cards */
+[data-testid="stMetricValue"] { font-size: 1.5rem; }
+/* Status badge helper */
+.badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.78em;
+    font-weight: 600;
+    color: #fff;
+}
+/* Score tier colors */
+.score-red  { background: #dc3545; }
+.score-yellow { background: #fd7e14; }
+.score-green  { background: #198754; }
+.score-star   { background: #0d6efd; }
+/* Section dividers */
+.section-title {
+    font-size: 0.75em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #6c757d;
+    margin: 0.5rem 0 0.25rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ── Init DB on startup ────────────────────────────────────────────────────────
 init_db()
 
 
-# ── Shared helpers ─────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 STATUS_COLORS = {
     "DISCOVERED":           "#6c757d",
@@ -74,22 +108,31 @@ STATUS_COLORS = {
     ApplicationStatus.WITHDRAWN:           "#6c757d",
 }
 
-SCORE_EMOJI = {
-    range(0, 50):   "🔴",
-    range(50, 70):  "🟡",
-    range(70, 85):  "🟢",
-    range(85, 101): "⭐",
-}
+SCORE_TIERS = [
+    (85, "⭐", "#0d6efd"),
+    (70, "🟢", "#198754"),
+    (50, "🟡", "#fd7e14"),
+    (0,  "🔴", "#dc3545"),
+]
 
 
 def score_badge(score: Optional[int]) -> str:
     if score is None:
         return "—"
-    for r, emoji in SCORE_EMOJI.items():
-        if score in r:
+    for threshold, emoji, _ in SCORE_TIERS:
+        if score >= threshold:
             return f"{emoji} {score}"
     return str(score)
 
+
+def status_pill(status: str) -> str:
+    color = STATUS_COLORS.get(status, "#6c757d")
+    return (
+        f'<span class="badge" style="background:{color}">{status}</span>'
+    )
+
+
+# ── Data loaders ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=30)
 def load_jobs(
@@ -185,7 +228,6 @@ def load_stats() -> dict:
         for t in j.get_technologies():
             tech_counter[t] = tech_counter.get(t, 0) + 1
 
-    # Applications by week
     app_by_week: dict[str, int] = {}
     for a in all_apps:
         if a.applied_at:
@@ -215,23 +257,30 @@ def load_stats() -> dict:
     }
 
 
-# ── Apply helpers ─────────────────────────────────────────────────────────────
+def _load_settings() -> dict:
+    """Load configs/settings.yaml — returns empty dict on error."""
+    import yaml
+    path = ROOT / "configs" / "settings.yaml"
+    try:
+        return yaml.safe_load(path.read_text()) or {}
+    except Exception:
+        return {}
+
+
+# ── Apply helpers ──────────────────────────────────────────────────────────────
 
 def queue_job_for_apply(job_id: str) -> bool:
     """Add job to task queue and set status to QUEUED. Returns True if newly queued."""
-    from sqlmodel import select
     with get_session() as session:
-        # Check if already pending in queue
         existing = session.exec(
             select(TaskQueue)
             .where(TaskQueue.task_type == TaskType.APPLICATION)
             .where(TaskQueue.status == TaskStatus.PENDING)
         ).all()
         for t in existing:
-            import json as _json
             try:
-                if _json.loads(t.payload).get("job_id") == job_id:
-                    return False  # already queued
+                if json.loads(t.payload).get("job_id") == job_id:
+                    return False
             except Exception:
                 pass
 
@@ -242,17 +291,13 @@ def queue_job_for_apply(job_id: str) -> bool:
 
 
 def run_apply_subprocess(job_id: str, dry_run: bool = False) -> tuple[int, str]:
-    """Run the application pipeline as a subprocess. Returns (returncode, combined_output)."""
+    """Run the application pipeline as a subprocess."""
     cmd = [sys.executable, "-m", "pipelines.application", "--job-id", job_id]
     if dry_run:
         cmd.append("--dry-run")
     try:
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=str(ROOT),
+            cmd, capture_output=True, text=True, timeout=300, cwd=str(ROOT),
         )
         output = (result.stdout or "") + (result.stderr or "")
         return result.returncode, output.strip()
@@ -262,27 +307,14 @@ def run_apply_subprocess(job_id: str, dry_run: bool = False) -> tuple[int, str]:
         return 1, str(exc)
 
 
-def _is_manual_only_url(url: str) -> bool:
-    """Return True for sources that can't be auto-applied (e.g. HN threads)."""
-    return "news.ycombinator.com" in url or "ycombinator.com/item" in url
-
-
 def run_tailor_subprocess(job_id: str) -> tuple[int, str, Optional[Path]]:
-    """
-    Run resume-only tailoring as a subprocess.
-    Returns (returncode, combined_output, pdf_path_or_None).
-    """
+    """Run resume-only tailoring as a subprocess."""
     cmd = [sys.executable, "-m", "pipelines.application", "--job-id", job_id, "--resume-only"]
     try:
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=str(ROOT),
+            cmd, capture_output=True, text=True, timeout=300, cwd=str(ROOT),
         )
         output = (result.stdout or "") + (result.stderr or "")
-        # Extract the PDF path printed by tailor_only()
         pdf_path: Optional[Path] = None
         for line in output.splitlines():
             if line.startswith("RESUME_PATH:"):
@@ -295,132 +327,39 @@ def run_tailor_subprocess(job_id: str) -> tuple[int, str, Optional[Path]]:
         return 1, str(exc), None
 
 
-def _render_resume_only_panel(job_id: str) -> None:
-    """Generate-resume panel for manual-apply jobs (HN, etc.)."""
-    output_key = f"tailor_output_{job_id}"
-    pdf_key = f"tailor_pdf_{job_id}"
-
-    if st.button(
-        "📄 Generate Tailored Resume",
-        key=f"tailor_{job_id}",
-        type="primary",
-        use_container_width=True,
-        help="Tailor resume to this job's JD and produce a PDF — no browser opened",
-    ):
-        with st.spinner("Tailoring resume… (may take ~30 s with LLM)"):
-            rc, output, pdf_path = run_tailor_subprocess(job_id)
-        st.session_state[output_key] = output
-        st.session_state[pdf_key] = str(pdf_path) if pdf_path else None
-        if rc == 0 and pdf_path:
-            st.success("Resume generated!")
-        else:
-            st.error("Tailoring failed — see output below.")
-
-    # ── Show download button if resume exists ─────────────────────────────────
-    saved_pdf = st.session_state.get(pdf_key)
-    if saved_pdf:
-        pdf_file = Path(saved_pdf)
-        if pdf_file.exists():
-            with open(pdf_file, "rb") as fh:
-                st.download_button(
-                    label=f"⬇ Download {pdf_file.name}",
-                    data=fh.read(),
-                    file_name=pdf_file.name,
-                    mime="application/pdf" if pdf_file.suffix == ".pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"dl_{job_id}",
-                    use_container_width=True,
-                )
-
-    # ── Pipeline output log ───────────────────────────────────────────────────
-    if output_key in st.session_state and st.session_state[output_key]:
-        with st.expander("Pipeline output", expanded=False):
-            st.code(st.session_state[output_key], language="text")
-
-
-def _render_apply_panel(job_id: str, job_status: str, job_url: str) -> None:
-    """Render the Apply Actions panel inside the job detail view."""
-    st.write("**Apply Actions**")
-
-    # Current status badge
-    color = STATUS_COLORS.get(job_status, "#6c757d")
-    st.markdown(
-        f'<span style="background:{color};color:#fff;padding:2px 8px;'
-        f'border-radius:4px;font-size:0.8em">{job_status}</span>',
-        unsafe_allow_html=True,
-    )
-    st.write("")
-
-    # HN / unsupported sources — show resume generator instead of apply buttons
-    if _is_manual_only_url(job_url):
-        st.info(
-            "This job was sourced from Hacker News. Auto-apply is not supported — "
-            "apply directly on the company's site.",
-            icon="ℹ️",
+def run_discover_subprocess(
+    max_age_days: Optional[float],
+    require_h1b: bool,
+    reject_no_sponsorship: bool,
+    locations: list[str],
+    use_llm: bool,
+) -> tuple[int, str]:
+    """Run the discovery pipeline as a subprocess with filter overrides."""
+    cmd = [sys.executable, "-m", "pipelines.discovery"]
+    if use_llm:
+        cmd.append("--llm")
+    if max_age_days is not None:
+        cmd.extend(["--max-age-days", str(max_age_days)])
+    if require_h1b:
+        cmd.append("--require-h1b")
+    if not reject_no_sponsorship:
+        cmd.append("--no-reject-no-sponsorship")
+    if locations:
+        cmd.extend(["--locations", ",".join(locations)])
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600, cwd=str(ROOT),
         )
-        _render_resume_only_panel(job_id)
-        return
+        output = (result.stdout or "") + (result.stderr or "")
+        return result.returncode, output.strip()
+    except subprocess.TimeoutExpired:
+        return 1, "Timed out after 10 minutes."
+    except Exception as exc:
+        return 1, str(exc)
 
-    btn_col1, btn_col2, btn_col3 = st.columns(3)
 
-    # ── Queue for Apply ───────────────────────────────────────────────────────
-    with btn_col1:
-        already_applied = job_status in ("APPLIED",)
-        if st.button(
-            "➕ Queue",
-            key=f"queue_{job_id}",
-            use_container_width=True,
-            disabled=already_applied,
-            help="Add to task queue — processed by `make apply-queue`",
-        ):
-            added = queue_job_for_apply(job_id)
-            if added:
-                st.success("Queued!")
-                st.rerun()
-            else:
-                st.info("Already queued.")
-
-    # ── Apply Now ─────────────────────────────────────────────────────────────
-    with btn_col2:
-        if st.button(
-            "▶ Apply Now",
-            key=f"apply_{job_id}",
-            use_container_width=True,
-            disabled=already_applied,
-            type="primary",
-            help="Tailor resume and submit application immediately",
-        ):
-            with st.spinner("Applying… (may take up to 5 min)"):
-                rc, output = run_apply_subprocess(job_id)
-            if rc == 0:
-                st.success("Application submitted!")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error("Application failed — see output below.")
-            st.session_state[f"apply_output_{job_id}"] = output
-
-    # ── Dry Run ───────────────────────────────────────────────────────────────
-    with btn_col3:
-        if st.button(
-            "🔍 Dry Run",
-            key=f"dry_{job_id}",
-            use_container_width=True,
-            help="Open browser and fill form but do NOT submit",
-        ):
-            with st.spinner("Opening browser for dry run…"):
-                rc, output = run_apply_subprocess(job_id, dry_run=True)
-            st.info("Dry run complete." if rc == 0 else "Dry run ended.")
-            st.session_state[f"apply_output_{job_id}"] = output
-
-    # ── Output log ────────────────────────────────────────────────────────────
-    output_key = f"apply_output_{job_id}"
-    if output_key in st.session_state and st.session_state[output_key]:
-        with st.expander("Pipeline output", expanded=True):
-            st.code(st.session_state[output_key], language="text")
-
-    # ── Resume generator (available for all jobs) ─────────────────────────────
-    st.divider()
-    _render_resume_only_panel(job_id)
+def _is_manual_only_url(url: str) -> bool:
+    return "news.ycombinator.com" in url or "ycombinator.com/item" in url
 
 
 def update_application_status(app_id: str, new_status: str) -> None:
@@ -441,52 +380,305 @@ def update_application_notes(app_id: str, notes: str) -> None:
     st.cache_data.clear()
 
 
-# ── Sidebar navigation ────────────────────────────────────────────────────────
+# ── Reusable UI widgets ───────────────────────────────────────────────────────
+
+def _render_resume_only_panel(job_id: str) -> None:
+    """Generate-resume panel for any job."""
+    output_key = f"tailor_output_{job_id}"
+    pdf_key    = f"tailor_pdf_{job_id}"
+
+    if st.button(
+        "📄 Generate Tailored Resume",
+        key=f"tailor_{job_id}",
+        type="secondary",
+        use_container_width=True,
+        help="Tailor resume to this JD and produce a PDF — no browser opened",
+    ):
+        with st.spinner("Tailoring resume… (may take ~30 s with LLM)"):
+            rc, output, pdf_path = run_tailor_subprocess(job_id)
+        st.session_state[output_key] = output
+        st.session_state[pdf_key] = str(pdf_path) if pdf_path else None
+        if rc == 0 and pdf_path:
+            st.success("Resume ready!")
+        else:
+            st.error("Tailoring failed — see output below.")
+
+    saved_pdf = st.session_state.get(pdf_key)
+    if saved_pdf:
+        pdf_file = Path(saved_pdf)
+        if pdf_file.exists():
+            with open(pdf_file, "rb") as fh:
+                st.download_button(
+                    label=f"⬇ Download {pdf_file.name}",
+                    data=fh.read(),
+                    file_name=pdf_file.name,
+                    mime="application/pdf"
+                    if pdf_file.suffix == ".pdf"
+                    else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key=f"dl_{job_id}",
+                    use_container_width=True,
+                )
+
+    if output_key in st.session_state and st.session_state[output_key]:
+        with st.expander("Pipeline output", expanded=False):
+            st.code(st.session_state[output_key], language="text")
+
+
+def _render_apply_panel(job_id: str, job_status: str, job_url: str) -> None:
+    """Apply actions panel inside the job detail view."""
+    color = STATUS_COLORS.get(job_status, "#6c757d")
+    st.markdown(status_pill(job_status), unsafe_allow_html=True)
+    st.write("")
+
+    # HN / unsupported sources
+    if _is_manual_only_url(job_url):
+        st.info(
+            "Sourced from Hacker News — auto-apply not supported. "
+            "Apply directly on the company's site.",
+            icon="ℹ️",
+        )
+        _render_resume_only_panel(job_id)
+        return
+
+    already_applied = job_status == "APPLIED"
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button(
+            "➕ Queue",
+            key=f"queue_{job_id}",
+            use_container_width=True,
+            disabled=already_applied,
+            help="Add to task queue for `make apply-queue`",
+        ):
+            added = queue_job_for_apply(job_id)
+            st.success("Queued!") if added else st.info("Already queued.")
+            if added:
+                st.rerun()
+
+    with col2:
+        if st.button(
+            "▶ Apply Now",
+            key=f"apply_{job_id}",
+            use_container_width=True,
+            disabled=already_applied,
+            type="primary",
+            help="Tailor resume and submit application immediately",
+        ):
+            with st.spinner("Applying… (may take up to 5 min)"):
+                rc, output = run_apply_subprocess(job_id)
+            if rc == 0:
+                st.success("Application submitted!")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("Application failed — see output below.")
+            st.session_state[f"apply_output_{job_id}"] = output
+
+    with col3:
+        if st.button(
+            "🔍 Dry Run",
+            key=f"dry_{job_id}",
+            use_container_width=True,
+            help="Fill form in browser but do NOT submit",
+        ):
+            with st.spinner("Opening browser…"):
+                rc, output = run_apply_subprocess(job_id, dry_run=True)
+            st.info("Dry run complete." if rc == 0 else "Dry run ended.")
+            st.session_state[f"apply_output_{job_id}"] = output
+
+    output_key = f"apply_output_{job_id}"
+    if output_key in st.session_state and st.session_state[output_key]:
+        with st.expander("Pipeline output", expanded=True):
+            st.code(st.session_state[output_key], language="text")
+
+    st.divider()
+    _render_resume_only_panel(job_id)
+
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 
 def render_sidebar() -> str:
     with st.sidebar:
-        st.title("💼 JDASS")
+        st.markdown("## 💼 JDASS")
         st.caption("Job Discovery & Application System")
         st.divider()
+
         page = st.radio(
-            "Navigate",
-            ["🔍 Jobs", "📋 Applications", "📊 Stats", "✅ Review"],
+            "nav",
+            ["🚀 Discover", "🔍 Jobs", "📋 Applications", "📊 Stats", "✅ Review"],
             label_visibility="collapsed",
         )
         st.divider()
 
-        # Quick stats in sidebar
+        # Quick stats
         stats = load_stats()
-        col1, col2 = st.columns(2)
-        col1.metric("Jobs", stats["total_jobs"])
-        col2.metric("Applied", stats["total_apps"])
-        col1.metric("Interviews", stats["interviews"])
-        col2.metric("Offers", stats["offers"])
+        c1, c2 = st.columns(2)
+        c1.metric("Jobs", stats["total_jobs"])
+        c2.metric("Applied", stats["total_apps"])
+        c1.metric("Interviews", stats["interviews"])
+        c2.metric("Offers", stats["offers"])
 
         st.divider()
-        if st.button("🔄 Refresh data", use_container_width=True):
+        if st.button("🔄 Refresh", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
-        st.caption("Avg score: **{}**  |  Top: **{}**".format(
-            stats["avg_score"], stats["top_score"]
-        ))
-
+        st.caption(
+            f"Avg score: **{stats['avg_score']}**  ·  "
+            f"Top: **{stats['top_score']}**"
+        )
     return page
 
 
-# ── Page 1: Jobs ──────────────────────────────────────────────────────────────
+# ── Page: Discover ─────────────────────────────────────────────────────────────
+
+def page_discover():
+    st.header("🚀 Discover Jobs")
+    st.caption("Configure filters and run the discovery pipeline to scrape new job postings.")
+
+    # Load defaults from settings.yaml
+    cfg = _load_settings()
+    filters = cfg.get("filters", {})
+
+    # ── Filter configuration ───────────────────────────────────────────────────
+    st.subheader("Filter Settings")
+    st.caption("These override `configs/settings.yaml` for this run only.")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown('<p class="section-title">Recency</p>', unsafe_allow_html=True)
+        default_age = filters.get("max_age_days", 3.0)
+        age_enabled = st.toggle(
+            "Limit by posting age",
+            value=default_age is not None and default_age > 0,
+            key="disc_age_enabled",
+        )
+        max_age = None
+        if age_enabled:
+            max_age = st.slider(
+                "Max age (days)",
+                min_value=0.5,
+                max_value=30.0,
+                value=float(default_age) if default_age else 7.0,
+                step=0.5,
+                format="%.1f days",
+                help="Only keep jobs posted within this many days",
+            )
+
+        st.markdown('<p class="section-title">Sponsorship</p>', unsafe_allow_html=True)
+        require_h1b = st.toggle(
+            "Require H1B mention",
+            value=filters.get("require_h1b", False),
+            help="Only keep jobs that explicitly mention H1B sponsorship",
+        )
+        reject_no_sponsor = st.toggle(
+            "Reject 'no sponsorship' jobs",
+            value=filters.get("reject_no_sponsorship", True),
+            help="Filter out listings that explicitly say they won't sponsor",
+        )
+
+    with col2:
+        st.markdown('<p class="section-title">Location Keywords</p>', unsafe_allow_html=True)
+        default_locs = filters.get("allowed_locations", ["chicago", "remote", "usa", "anywhere"])
+        loc_text = st.text_area(
+            "Allowed locations (one per line)",
+            value="\n".join(default_locs),
+            height=140,
+            help="A job passes if its location/description contains any of these keywords (case-insensitive)",
+            label_visibility="collapsed",
+        )
+        locations = [loc.strip() for loc in loc_text.splitlines() if loc.strip()]
+
+    with col3:
+        st.markdown('<p class="section-title">Pipeline Options</p>', unsafe_allow_html=True)
+        use_llm = st.toggle(
+            "Use LLM for JD parsing",
+            value=False,
+            help="Enables richer tech extraction. Requires Ollama running.",
+        )
+        st.write("")
+        st.info(
+            "**Sources** are configured in `configs/sources.yaml`. "
+            "Edit that file to add/remove companies.",
+            icon="📂",
+        )
+
+    st.divider()
+
+    # ── Summary of active filters ──────────────────────────────────────────────
+    filter_summary = []
+    if max_age:
+        filter_summary.append(f"📅 Posted ≤ {max_age:.1f} days ago")
+    if require_h1b:
+        filter_summary.append("🛂 H1B required")
+    if reject_no_sponsor:
+        filter_summary.append("✅ Reject 'no sponsorship'")
+    if locations:
+        filter_summary.append(f"📍 Locations: {', '.join(locations[:4])}")
+    if use_llm:
+        filter_summary.append("🤖 LLM parsing")
+
+    if filter_summary:
+        st.caption("  ·  ".join(filter_summary))
+
+    # ── Run button ─────────────────────────────────────────────────────────────
+    run_col, _ = st.columns([1, 3])
+    with run_col:
+        run_clicked = st.button(
+            "🚀 Run Discovery",
+            type="primary",
+            use_container_width=True,
+            help="Scrape all configured sources and save new jobs to the database",
+        )
+
+    if run_clicked:
+        with st.spinner("Running discovery pipeline… this may take a minute."):
+            rc, output = run_discover_subprocess(
+                max_age_days=max_age,
+                require_h1b=require_h1b,
+                reject_no_sponsorship=reject_no_sponsor,
+                locations=locations,
+                use_llm=use_llm,
+            )
+        st.cache_data.clear()
+
+        if rc == 0:
+            # Parse summary numbers from output
+            saved_n = 0
+            for line in output.splitlines():
+                if "saved=" in line:
+                    import re
+                    m = re.search(r"saved=(\d+)", line)
+                    if m:
+                        saved_n = int(m.group(1))
+            st.success(f"Discovery complete! **{saved_n}** new jobs saved.")
+        else:
+            st.error("Discovery pipeline exited with errors — see output below.")
+
+        with st.expander("Pipeline output", expanded=(rc != 0)):
+            st.code(output, language="text")
+
+
+# ── Page: Jobs ─────────────────────────────────────────────────────────────────
 
 def page_jobs():
-    st.header("🔍 Discovered Jobs")
+    st.header("🔍 Jobs")
 
-    # ── Filters bar ──────────────────────────────────────────────────────────
-    col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
-    search     = col1.text_input("Search company / title", placeholder="e.g. Stripe, Backend", label_visibility="collapsed")
-    min_score  = col2.slider("Min score", 0, 100, 50, step=5)
-    remote_chk = col3.checkbox("Remote only")
-    h1b_chk    = col4.checkbox("H1B only")
-    status_sel = col5.selectbox("Status", ["All", "DISCOVERED", "QUEUED", "APPLIED", "FILTERED_OUT"])
+    # ── Filter bar ────────────────────────────────────────────────────────────
+    with st.container():
+        fc1, fc2, fc3, fc4, fc5 = st.columns([3, 1, 1, 1, 1])
+        search     = fc1.text_input("", placeholder="🔎  Search company or title…", label_visibility="collapsed")
+        min_score  = fc2.slider("Min score", 0, 100, 50, step=5, label_visibility="collapsed",
+                                help="Minimum match score")
+        remote_chk = fc3.checkbox("Remote", help="Remote-eligible only")
+        h1b_chk    = fc4.checkbox("H1B", help="Jobs that mention H1B sponsorship")
+        status_sel = fc5.selectbox(
+            "Status",
+            ["All", "DISCOVERED", "QUEUED", "APPLIED", "MANUAL_REVIEW", "FAILED_AUTO_APPLY", "FILTERED_OUT"],
+            label_visibility="collapsed",
+        )
 
     df = load_jobs(
         min_score=min_score,
@@ -497,20 +689,32 @@ def page_jobs():
     )
 
     if df.empty:
-        st.info("No jobs match your filters.")
+        st.info("No jobs match your filters. Try running Discovery or adjusting the filters above.")
         return
 
-    st.caption(f"Showing **{len(df)}** jobs")
+    # ── Status summary chips ───────────────────────────────────────────────────
+    status_counts = df["Status"].value_counts().to_dict()
+    chips = []
+    for s, cnt in status_counts.items():
+        color = STATUS_COLORS.get(s, "#6c757d")
+        chips.append(f'<span class="badge" style="background:{color}">{s} {cnt}</span>')
+    st.markdown(
+        f"**{len(df)}** jobs  &nbsp;&nbsp; " + "  ".join(chips),
+        unsafe_allow_html=True,
+    )
 
     # ── Job table ─────────────────────────────────────────────────────────────
-    display_cols = ["Score", "Company", "Title", "Location", "Seniority", "Remote", "H1B", "Tech", "Source", "Status", "Discovered"]
+    display_cols = ["Score", "Company", "Title", "Location", "Seniority",
+                    "Remote", "H1B", "Source", "Status", "Discovered"]
     display_df = df[display_cols].copy()
-    display_df["Score"] = display_df["Score"].apply(lambda s: score_badge(s) if pd.notna(s) else "—")
+    display_df["Score"] = display_df["Score"].apply(
+        lambda s: score_badge(s) if pd.notna(s) else "—"
+    )
 
     selected = st.dataframe(
         display_df,
         use_container_width=True,
-        height=400,
+        height=380,
         selection_mode="single-row",
         on_select="rerun",
         hide_index=True,
@@ -518,92 +722,104 @@ def page_jobs():
 
     # ── Job detail panel ──────────────────────────────────────────────────────
     sel_rows = selected.get("selection", {}).get("rows", [])
-    if sel_rows:
-        idx = sel_rows[0]
-        job_row = df.iloc[idx]
+    if not sel_rows:
+        st.caption("Select a job to view details and apply.")
+        return
 
-        st.divider()
-        col_left, col_right = st.columns([2, 1])
+    idx = sel_rows[0]
+    job_row = df.iloc[idx]
 
-        with col_left:
-            st.subheader(f"{job_row['Company']} — {job_row['Title']}")
-            st.caption(f"📍 {job_row['Location']}  |  🏷 {job_row['Source']}  |  🔗 [{job_row['URL']}]({job_row['URL']})")
+    st.divider()
+    detail_left, detail_right = st.columns([3, 2])
 
-            with st.expander("📄 Job Description", expanded=False):
-                # Load full description
-                with get_session() as session:
-                    full_job = session.get(Job, job_row["id"])
-                st.text(full_job.description if full_job else job_row["Description"])
+    with detail_left:
+        score_val = job_row["Score"]
+        score_str = score_badge(score_val) if pd.notna(score_val) else "—"
+        st.subheader(f"{job_row['Company']} — {job_row['Title']}")
+        st.caption(
+            f"📍 {job_row['Location']}  ·  "
+            f"🏷 {job_row['Source']}  ·  "
+            f"Score: **{score_str}**  ·  "
+            f"Seniority: **{job_row['Seniority']}**"
+        )
+        st.link_button("Open Job Posting ↗", job_row["URL"])
 
-        with col_right:
-            # Score breakdown
+        # Full JD
+        with st.expander("📄 Job Description", expanded=False):
             with get_session() as session:
                 full_job = session.get(Job, job_row["id"])
+            st.text(full_job.description if full_job else job_row["Description"])
 
-            if full_job and full_job.score_breakdown:
-                bd = json.loads(full_job.score_breakdown)
-                st.metric("Match Score", bd.get("total", "—"))
-                st.write("**Score Breakdown**")
-                breakdown_items = {
-                    "Title match":    bd.get("title_match", 0),
-                    "Tech overlap":   bd.get("tech_overlap", 0),
-                    "Seniority":      bd.get("seniority_match", 0),
-                    "Location":       bd.get("location_bonus", 0),
-                    "H1B":            bd.get("h1b_bonus", 0),
-                    "Recency":        bd.get("recency_bonus", 0),
-                }
-                for label, val in breakdown_items.items():
-                    st.progress(val / 35, text=f"{label}: {val}")
+        # Tech tags
+        with get_session() as session:
+            full_job = session.get(Job, job_row["id"])
+        if full_job:
+            all_tech = (
+                full_job.get_technologies()
+                + full_job.get_frameworks()
+                + full_job.get_cloud_platforms()
+                + full_job.get_databases()
+            )
+            if all_tech:
+                st.write("**Technologies**")
+                st.write("  ".join(f"`{t}`" for t in all_tech[:15]))
 
-                if bd.get("matched_tech"):
-                    st.write("**Matched tech:** " + ", ".join(f"`{t}`" for t in bd["matched_tech"]))
+    with detail_right:
+        # Score breakdown card
+        if full_job and full_job.score_breakdown:
+            bd = json.loads(full_job.score_breakdown)
+            st.metric("Match Score", bd.get("total", "—"))
+            breakdown_items = {
+                "Title match":  bd.get("title_match", 0),
+                "Tech overlap": bd.get("tech_overlap", 0),
+                "Seniority":    bd.get("seniority_match", 0),
+                "Location":     bd.get("location_bonus", 0),
+                "H1B":          bd.get("h1b_bonus", 0),
+                "Recency":      bd.get("recency_bonus", 0),
+            }
+            for label, val in breakdown_items.items():
+                st.progress(min(val / 35, 1.0), text=f"{label}: {val}")
+            if bd.get("matched_tech"):
+                st.caption("Matched: " + ", ".join(f"`{t}`" for t in bd["matched_tech"]))
 
-            st.write("**Technologies**")
-            if full_job:
-                all_tech = full_job.get_technologies() + full_job.get_frameworks() + full_job.get_cloud_platforms() + full_job.get_databases()
-                if all_tech:
-                    st.write(" ".join(f"`{t}`" for t in all_tech[:12]))
-                else:
-                    st.caption("None extracted")
-
-            st.link_button("Open Job Posting ↗", job_row["URL"], use_container_width=True)
-
-            st.divider()
-            _render_apply_panel(job_row["id"], job_row["Status"], job_row["URL"])
+        st.divider()
+        _render_apply_panel(job_row["id"], job_row["Status"], job_row["URL"])
 
 
-# ── Page 2: Applications ──────────────────────────────────────────────────────
+# ── Page: Applications ────────────────────────────────────────────────────────
 
 def page_applications():
     st.header("📋 Applications")
 
     df = load_applications()
-
     if df.empty:
-        st.info("No applications yet. Run the application pipeline to get started.")
+        st.info("No applications yet. Use **Apply Now** on a job to get started.")
         return
 
-    # ── Status filter tabs ────────────────────────────────────────────────────
+    # ── Status tabs ───────────────────────────────────────────────────────────
     all_statuses = ["All"] + sorted(df["Status"].unique().tolist())
     tabs = st.tabs(all_statuses)
 
     for tab, status in zip(tabs, all_statuses):
         with tab:
             filtered = df if status == "All" else df[df["Status"] == status]
-            st.caption(f"{len(filtered)} applications")
+            st.caption(f"{len(filtered)} application{'s' if len(filtered) != 1 else ''}")
 
             if filtered.empty:
                 st.info(f"No applications with status '{status}'.")
                 continue
 
-            display_cols = ["Score", "Company", "Title", "Location", "Applied", "Status", "ATS", "Resume"]
+            display_cols = ["Score", "Company", "Title", "Location",
+                            "Applied", "Status", "ATS", "Resume"]
             display_df = filtered[display_cols].copy()
-            display_df["Score"] = display_df["Score"].apply(lambda s: score_badge(s) if pd.notna(s) else "—")
+            display_df["Score"] = display_df["Score"].apply(
+                lambda s: score_badge(s) if pd.notna(s) else "—"
+            )
 
             selected = st.dataframe(
                 display_df,
                 use_container_width=True,
-                height=300,
+                height=280,
                 selection_mode="single-row",
                 on_select="rerun",
                 hide_index=True,
@@ -611,49 +827,25 @@ def page_applications():
             )
 
             sel_rows = selected.get("selection", {}).get("rows", [])
-            if sel_rows:
-                idx = sel_rows[0]
-                app_row = filtered.iloc[idx]
+            if not sel_rows:
+                continue
 
-                st.divider()
-                col1, col2, col3 = st.columns([2, 1, 1])
+            idx = sel_rows[0]
+            app_row = filtered.iloc[idx]
 
-                with col1:
-                    st.subheader(f"{app_row['Company']} — {app_row['Title']}")
-                    st.caption(f"📍 {app_row['Location']}  |  Applied: {app_row['Applied']}")
-                    st.link_button("Open Job Posting ↗", app_row["URL"])
+            st.divider()
+            hdr_col, status_col, notes_col = st.columns([3, 1, 2])
 
-                with col2:
-                    st.write("**Update Status**")
-                    new_status = st.selectbox(
-                        "Status",
-                        [s.value for s in ApplicationStatus],
-                        index=[s.value for s in ApplicationStatus].index(app_row["Status"])
-                        if app_row["Status"] in [s.value for s in ApplicationStatus] else 0,
-                        key=f"status_sel_{app_row['id']}",
-                        label_visibility="collapsed",
-                    )
-                    if st.button("Save status", key=f"save_status_{app_row['id']}", use_container_width=True):
-                        update_application_status(app_row["id"], new_status)
-                        st.success("Status updated!")
-                        st.rerun()
+            with hdr_col:
+                score_str = score_badge(app_row["Score"]) if pd.notna(app_row["Score"]) else "—"
+                st.subheader(f"{app_row['Company']} — {app_row['Title']}")
+                st.caption(
+                    f"📍 {app_row['Location']}  ·  Applied: {app_row['Applied']}  ·  "
+                    f"Score: **{score_str}**  ·  ATS: {app_row['ATS']}"
+                )
+                st.link_button("Open Job Posting ↗", app_row["URL"])
 
-                with col3:
-                    st.write("**Notes**")
-                    notes = st.text_area(
-                        "Notes",
-                        value=app_row["Notes"],
-                        key=f"notes_{app_row['id']}",
-                        height=80,
-                        label_visibility="collapsed",
-                    )
-                    if st.button("Save notes", key=f"save_notes_{app_row['id']}", use_container_width=True):
-                        update_application_notes(app_row["id"], notes)
-                        st.success("Notes saved!")
-
-                # Resume viewer
                 if app_row.get("resume_path") and Path(str(app_row["resume_path"])).exists():
-                    st.write("**Tailored Resume**")
                     resume_path = Path(str(app_row["resume_path"]))
                     with open(resume_path, "rb") as f:
                         st.download_button(
@@ -661,11 +853,39 @@ def page_applications():
                             data=f,
                             file_name=resume_path.name,
                             mime="application/pdf",
-                            use_container_width=True,
                         )
 
+            with status_col:
+                st.markdown("**Status**")
+                status_vals = [s.value for s in ApplicationStatus]
+                cur_idx = status_vals.index(app_row["Status"]) if app_row["Status"] in status_vals else 0
+                new_status = st.selectbox(
+                    "Status",
+                    status_vals,
+                    index=cur_idx,
+                    key=f"status_sel_{app_row['id']}",
+                    label_visibility="collapsed",
+                )
+                if st.button("Save", key=f"save_status_{app_row['id']}", use_container_width=True):
+                    update_application_status(app_row["id"], new_status)
+                    st.success("Updated!")
+                    st.rerun()
 
-# ── Page 3: Stats ─────────────────────────────────────────────────────────────
+            with notes_col:
+                st.markdown("**Notes**")
+                notes = st.text_area(
+                    "Notes",
+                    value=app_row["Notes"],
+                    key=f"notes_{app_row['id']}",
+                    height=100,
+                    label_visibility="collapsed",
+                )
+                if st.button("Save notes", key=f"save_notes_{app_row['id']}", use_container_width=True):
+                    update_application_notes(app_row["id"], notes)
+                    st.success("Saved!")
+
+
+# ── Page: Stats ───────────────────────────────────────────────────────────────
 
 def page_stats():
     import plotly.express as px
@@ -674,83 +894,80 @@ def page_stats():
     st.header("📊 Stats & Insights")
     stats = load_stats()
 
-    # ── Top metrics ───────────────────────────────────────────────────────────
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Jobs Discovered", stats["total_jobs"])
-    col2.metric("Applications",    stats["total_apps"])
-    col3.metric("Interviews",      stats["interviews"])
-    col4.metric("Offers",          stats["offers"])
-    col5.metric("Avg Score",       stats["avg_score"])
+    # ── Top-line metrics ──────────────────────────────────────────────────────
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Jobs Discovered", stats["total_jobs"])
+    m2.metric("Applications",    stats["total_apps"])
+    m3.metric("Interviews",      stats["interviews"])
+    m4.metric("Offers",          stats["offers"])
+    m5.metric("Avg Score",       stats["avg_score"])
 
     st.divider()
+    row1_l, row1_r = st.columns(2)
 
-    row1_col1, row1_col2 = st.columns(2)
-
-    # ── Score distribution ────────────────────────────────────────────────────
-    with row1_col1:
+    with row1_l:
         st.subheader("Score Distribution")
         if stats["scores"]:
             fig = px.histogram(
-                x=stats["scores"],
-                nbins=20,
+                x=stats["scores"], nbins=20,
                 labels={"x": "Match Score", "y": "Jobs"},
                 color_discrete_sequence=["#0d6efd"],
             )
-            fig.update_layout(
-                margin=dict(l=0, r=0, t=20, b=0),
-                height=280,
-                showlegend=False,
+            fig.add_vline(
+                x=stats["avg_score"], line_dash="dash", line_color="#dc3545",
+                annotation_text=f"Avg {stats['avg_score']}",
             )
-            fig.add_vline(x=stats["avg_score"], line_dash="dash", line_color="red",
-                          annotation_text=f"Avg {stats['avg_score']}")
+            fig.update_layout(
+                margin=dict(l=0, r=0, t=20, b=0), height=280,
+                showlegend=False, plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No scored jobs yet.")
+            st.info("No scored jobs yet. Run `make parse-jobs`.")
 
-    # ── Source breakdown ──────────────────────────────────────────────────────
-    with row1_col2:
+    with row1_r:
         st.subheader("Jobs by Source")
         if stats["source_counts"]:
             fig = px.pie(
                 names=list(stats["source_counts"].keys()),
                 values=list(stats["source_counts"].values()),
                 color_discrete_sequence=px.colors.qualitative.Set2,
-                hole=0.4,
+                hole=0.45,
             )
-            fig.update_layout(margin=dict(l=0, r=0, t=20, b=0), height=280)
+            fig.update_layout(
+                margin=dict(l=0, r=0, t=20, b=0), height=280,
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No jobs yet.")
 
-    row2_col1, row2_col2 = st.columns(2)
+    row2_l, row2_r = st.columns(2)
 
-    # ── Tech frequency ────────────────────────────────────────────────────────
-    with row2_col1:
-        st.subheader("Top Technologies in Job Postings")
+    with row2_l:
+        st.subheader("Top Technologies")
         if stats["tech_counter"]:
             tech_df = pd.DataFrame(
                 list(stats["tech_counter"].items()),
                 columns=["Technology", "Count"],
             ).sort_values("Count", ascending=True).tail(15)
             fig = px.bar(
-                tech_df,
-                x="Count",
-                y="Technology",
-                orientation="h",
-                color="Count",
+                tech_df, x="Count", y="Technology",
+                orientation="h", color="Count",
                 color_continuous_scale="Blues",
             )
             fig.update_layout(
-                margin=dict(l=0, r=0, t=20, b=0),
-                height=380,
-                showlegend=False,
-                coloraxis_showscale=False,
+                margin=dict(l=0, r=0, t=20, b=0), height=380,
+                showlegend=False, coloraxis_showscale=False,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No tech data yet. Run `make parse-jobs`.")
+            st.info("No tech data yet.")
 
-    # ── Application status funnel ─────────────────────────────────────────────
-    with row2_col2:
-        st.subheader("Application Pipeline")
+    with row2_r:
+        st.subheader("Application Funnel")
         if stats["app_status_counts"]:
             funnel_order = [
                 ApplicationStatus.APPLIED,
@@ -758,73 +975,69 @@ def page_stats():
                 ApplicationStatus.INTERVIEW,
                 ApplicationStatus.OFFER,
             ]
-            funnel_data = [
-                {"Stage": s, "Count": stats["app_status_counts"].get(s, 0)}
-                for s in funnel_order
-            ]
             fig = go.Figure(go.Funnel(
-                y=[d["Stage"] for d in funnel_data],
-                x=[d["Count"] for d in funnel_data],
+                y=[s for s in funnel_order],
+                x=[stats["app_status_counts"].get(s, 0) for s in funnel_order],
                 textinfo="value+percent initial",
                 marker_color=["#198754", "#0dcaf0", "#0d6efd", "#ffc107"],
             ))
-            fig.update_layout(margin=dict(l=0, r=0, t=20, b=0), height=280)
+            fig.update_layout(
+                margin=dict(l=0, r=0, t=20, b=0), height=280,
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Rejection rate
             rejected = stats["app_status_counts"].get(ApplicationStatus.REJECTED, 0)
             total = stats["total_apps"]
             if total:
-                st.caption(f"Rejection rate: **{rejected}/{total}** ({round(rejected/total*100)}%)")
+                st.caption(
+                    f"Rejection rate: **{rejected}/{total}** "
+                    f"({round(rejected / total * 100)}%)"
+                )
         else:
             st.info("No applications yet.")
 
-    # ── Applications over time ────────────────────────────────────────────────
     if stats["app_by_week"]:
         st.subheader("Applications by Week")
         week_df = pd.DataFrame(
             sorted(stats["app_by_week"].items()),
             columns=["Week", "Applications"],
         )
-        fig = px.bar(week_df, x="Week", y="Applications", color_discrete_sequence=["#198754"])
-        fig.update_layout(margin=dict(l=0, r=0, t=20, b=0), height=200)
+        fig = px.bar(
+            week_df, x="Week", y="Applications",
+            color_discrete_sequence=["#198754"],
+        )
+        fig.update_layout(
+            margin=dict(l=0, r=0, t=20, b=0), height=200,
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
         st.plotly_chart(fig, use_container_width=True)
 
 
-# ── Main router ────────────────────────────────────────────────────────────────
+# ── Page: Review ──────────────────────────────────────────────────────────────
 
 def page_review():
-    """
-    Review page — shows LLM-guessed form field answers from past applications.
-    User can edit values and confirm them; confirmed answers are written to
-    configs/form_answers.yaml so future applications reuse them automatically.
-    """
+    """Review + confirm LLM-guessed form field answers."""
     st.header("✅ Form Answer Review")
     st.caption(
-        "These answers were filled by the LLM during automation. "
-        "Review, edit, and confirm them — confirmed answers will be reused for future applications."
+        "Answers filled by the LLM during automation. "
+        "Review and confirm — confirmed answers are reused for future applications."
     )
 
-    # ── Import form_answers helper ─────────────────────────────────────────────
-    import sys as _sys
-    if str(ROOT) not in _sys.path:
-        _sys.path.insert(0, str(ROOT))
     from core import form_answers as fa
 
-    # ── Tab 1: Application-level review ───────────────────────────────────────
     tab_apps, tab_global = st.tabs(["By Application", "All Saved Answers"])
 
+    # ── Tab 1: Per-application review ─────────────────────────────────────────
     with tab_apps:
-        # Load applications that have LLM guesses
         with get_session() as session:
             apps_with_guesses = session.exec(
                 select(Application).where(Application.form_guesses.isnot(None))
             ).all()
 
         if not apps_with_guesses:
-            st.info("No applications with LLM-guessed answers yet. Run the automation to populate this page.")
+            st.info("No LLM-guessed answers yet. Run the automation to populate this.")
         else:
-            # Build display list with job info
             rows = []
             for app in apps_with_guesses:
                 guesses = json.loads(app.form_guesses or "[]")
@@ -841,13 +1054,12 @@ def page_review():
                     "guesses": guesses,
                 })
 
-            # Show selector
             options = [
                 f"{r['Company']} — {r['Title']} ({r['Applied']})  [{r['Pending']} pending]"
                 for r in rows
             ]
             selected_idx = st.selectbox(
-                "Select application to review",
+                "Select application",
                 range(len(options)),
                 format_func=lambda i: options[i],
             )
@@ -860,55 +1072,49 @@ def page_review():
                 st.divider()
                 st.subheader(f"{selected_row['Company']} — {selected_row['Title']}")
 
-                # Build editable form for each guess
                 edited: list[dict] = []
                 for i, guess in enumerate(guesses):
-                    label = guess.get("label", "")
-                    current_value = guess.get("value", "")
+                    label        = guess.get("label", "")
+                    current_val  = guess.get("value", "")
                     options_list = guess.get("options", [])
-                    source = guess.get("source", "llm")
-                    confirmed = guess.get("confirmed", False)
+                    source       = guess.get("source", "llm")
+                    confirmed    = guess.get("confirmed", False)
 
                     col_label, col_input, col_status = st.columns([3, 3, 1])
                     with col_label:
                         st.markdown(f"**{label}**")
                         st.caption(f"source: {source}")
-
                     with col_input:
                         if options_list:
-                            # Select field — show dropdown with known options
-                            all_opts = options_list if current_value in options_list else [current_value] + options_list
-                            try:
-                                default_i = all_opts.index(current_value)
-                            except ValueError:
-                                default_i = 0
+                            all_opts = (
+                                options_list
+                                if current_val in options_list
+                                else [current_val] + options_list
+                            )
                             new_val = st.selectbox(
-                                "value",
-                                all_opts,
-                                index=default_i,
-                                key=f"review_sel_{selected_row['app_id']}_{i}",
+                                "value", all_opts,
+                                index=all_opts.index(current_val) if current_val in all_opts else 0,
+                                key=f"rev_sel_{selected_row['app_id']}_{i}",
                                 label_visibility="collapsed",
                             )
                         else:
                             new_val = st.text_input(
-                                "value",
-                                value=current_value,
-                                key=f"review_txt_{selected_row['app_id']}_{i}",
+                                "value", value=current_val,
+                                key=f"rev_txt_{selected_row['app_id']}_{i}",
                                 label_visibility="collapsed",
                             )
-
                     with col_status:
-                        if confirmed:
-                            st.markdown("✅")
-                        else:
-                            st.markdown("⏳")
+                        st.markdown("✅" if confirmed else "⏳")
 
                     edited.append({"label": label, "value": new_val})
 
                 st.divider()
-                if st.button("✅ Confirm All & Save", type="primary", key=f"confirm_{selected_row['app_id']}"):
+                if st.button(
+                    "✅ Confirm All & Save",
+                    type="primary",
+                    key=f"confirm_{selected_row['app_id']}",
+                ):
                     fa.confirm_many(edited)
-                    # Update the Application record — mark all guesses as confirmed
                     confirmed_guesses = [
                         {**g, "value": e["value"], "confirmed": True}
                         for g, e in zip(guesses, edited)
@@ -921,9 +1127,10 @@ def page_review():
                     st.success(f"Saved {len(edited)} answers to configs/form_answers.yaml")
                     st.rerun()
 
+    # ── Tab 2: Global answers store ────────────────────────────────────────────
     with tab_global:
         st.subheader("All Saved Answers")
-        st.caption("Edit any value and click Save to update configs/form_answers.yaml.")
+        st.caption("Edit any value and click Save to update `configs/form_answers.yaml`.")
 
         all_answers = fa.load()
         if not all_answers:
@@ -931,9 +1138,9 @@ def page_review():
         else:
             edited_global: list[dict] = []
             for label, entry in all_answers.items():
-                val = entry.get("value", "")
+                val       = entry.get("value", "")
                 confirmed = entry.get("confirmed", False)
-                source = entry.get("source", "")
+                source    = entry.get("source", "")
 
                 col1, col2, col3 = st.columns([3, 3, 1])
                 with col1:
@@ -941,24 +1148,27 @@ def page_review():
                     st.caption(f"{'✅ confirmed' if confirmed else '⏳ pending'}  ·  {source}")
                 with col2:
                     new_val = st.text_input(
-                        "val",
-                        value=val,
+                        "val", value=val,
                         key=f"global_{label}",
                         label_visibility="collapsed",
                     )
                 with col3:
-                    st.write("")  # spacer
+                    st.write("")
                 edited_global.append({"label": label, "value": new_val})
 
-            if st.button("💾 Save All Changes", key="save_global"):
+            if st.button("💾 Save All Changes", key="save_global", type="primary"):
                 fa.confirm_many(edited_global)
                 st.success("Saved.")
                 st.rerun()
 
 
+# ── Router ────────────────────────────────────────────────────────────────────
+
 def main():
     page = render_sidebar()
-    if page == "🔍 Jobs":
+    if page == "🚀 Discover":
+        page_discover()
+    elif page == "🔍 Jobs":
         page_jobs()
     elif page == "📋 Applications":
         page_applications()
@@ -968,5 +1178,4 @@ def main():
         page_review()
 
 
-# Streamlit executes the module top-to-bottom; this is the entrypoint.
 main()

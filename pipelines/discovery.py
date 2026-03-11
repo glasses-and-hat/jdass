@@ -90,10 +90,11 @@ class DiscoveryPipeline:
         sources_file: str = "sources.yaml",
         semantic_dedup: bool = False,
         use_llm: bool = False,
+        filter_overrides: Optional[dict] = None,
     ):
         self._settings = _load_yaml(settings_file)
         self._sources = _load_yaml(sources_file)
-        self._filter_cfg = self._build_filter_config()
+        self._filter_cfg = self._build_filter_config(filter_overrides or {})
         self._job_filter = JobFilter(self._filter_cfg)
         self._dedup = Deduplicator(semantic_enabled=semantic_dedup)
         self._parser = JDParser(use_llm=use_llm)
@@ -252,8 +253,10 @@ class DiscoveryPipeline:
 
     # ── Config helpers ────────────────────────────────────────────────────────
 
-    def _build_filter_config(self) -> FilterConfig:
-        filt = self._settings.get("filters", {})
+    def _build_filter_config(self, overrides: dict | None = None) -> FilterConfig:
+        filt = dict(self._settings.get("filters", {}))
+        if overrides:
+            filt.update(overrides)
         return FilterConfig(
             remote_ok=filt.get("remote_ok", True),
             allowed_locations=filt.get("allowed_locations", ["chicago", "remote"]),
@@ -305,14 +308,55 @@ def main() -> None:
         default=False,
         help="Force-disable semantic deduplication",
     )
+    parser.add_argument(
+        "--max-age-days",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Only keep jobs posted within the last N days (overrides settings.yaml)",
+    )
+    parser.add_argument(
+        "--require-h1b",
+        action="store_true",
+        default=False,
+        help="Only keep jobs that explicitly mention H1B sponsorship",
+    )
+    parser.add_argument(
+        "--no-reject-no-sponsorship",
+        action="store_true",
+        default=False,
+        help="Do NOT reject jobs that say 'no sponsorship' (overrides settings.yaml)",
+    )
+    parser.add_argument(
+        "--locations",
+        type=str,
+        default=None,
+        metavar="LOC1,LOC2",
+        help="Comma-separated location keywords to allow (overrides settings.yaml)",
+    )
     args = parser.parse_args()
 
     use_semantic = args.semantic and not args.no_semantic
 
+    # Build filter overrides from CLI args
+    filter_overrides: dict = {}
+    if args.max_age_days is not None:
+        filter_overrides["max_age_days"] = args.max_age_days
+    if args.require_h1b:
+        filter_overrides["require_h1b"] = True
+    if args.no_reject_no_sponsorship:
+        filter_overrides["reject_no_sponsorship"] = False
+    if args.locations:
+        filter_overrides["allowed_locations"] = [loc.strip() for loc in args.locations.split(",")]
+
     # Set up logging to file + stderr
     _setup_logging()
 
-    pipeline = DiscoveryPipeline(semantic_dedup=use_semantic, use_llm=args.llm)
+    pipeline = DiscoveryPipeline(
+        semantic_dedup=use_semantic,
+        use_llm=args.llm,
+        filter_overrides=filter_overrides or None,
+    )
     result = pipeline.run()
 
     print(f"\n{'='*50}")
