@@ -1,0 +1,23 @@
+# ── Form Answers Cache ────────────────────────────────────────────────────────
+# Copy this file to configs/form_answers.yaml.
+# This file is auto-populated as you approve answers during applications.
+# configs/form_answers.yaml is gitignored — this example is safe to commit.
+#
+# Structure: each key is the form question label (lowercased), value is your answer.
+# "confirmed: true" means you manually approved it; "source: llm" means auto-guessed.
+
+answers:
+  country:
+    confirmed: false
+    source: llm
+    value: United States
+  how did you hear about this opportunity:
+    confirmed: true
+    source: user
+    value: LinkedIn
+  are you authorized to work in the location(s) you selected:
+    confirmed: true
+    source: user
+    value: 'Yes'
+  # Add more as you encounter them during applications.
+  # The system will populate this automatically and ask you to confirm new ones.

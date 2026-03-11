@@ -1,0 +1,58 @@
+# ── Applicant Profile ─────────────────────────────────────────────────────────
+# Copy this file to configs/applicant.yaml and fill in your real details.
+# configs/applicant.yaml is gitignored — this example file is safe to commit.
+
+personal:
+  first_name: "Jane"
+  last_name: "Smith"
+  email: "jane.smith@example.com"       # your real email
+  phone: "+1-555-555-5555"              # format: +1-555-555-5555
+  linkedin_url: "https://www.linkedin.com/in/yourprofile"
+  github_url: "https://github.com/yourhandle"
+  portfolio_url: ""                     # optional
+  location_city: "Chicago"
+  location_state: "IL"
+  location_country: "United States"
+  zip_code: "60601"
+  current_employer: "Current Company Name"
+
+# Used on forms that ask "are you authorized to work in the US?"
+work_authorization:
+  authorized_to_work_in_us: true
+  require_sponsorship: false            # true if you need H1B sponsorship
+  visa_type: ""                         # e.g. "H1B", "OPT", "Green Card"
+
+# Work preferences (for forms that ask)
+preferences:
+  desired_salary_min: 130000            # USD, annual
+  desired_salary_max: 180000
+  willing_to_relocate: false
+  years_of_experience: 5
+
+# Education — most recent degree first
+education:
+  - degree: "Bachelor of Science"
+    field: "Computer Science"
+    institution: "University Name"
+    graduation_year: 2019
+  # - degree: "Master of Science"
+  #   field: "Computer Science"
+  #   institution: "University Name"
+  #   graduation_year: 2021
+
+# Resume — path is relative to project root
+resume:
+  master_docx: "resumes/master_resume.docx"
+
+# Cover letter — optional, used on forms that accept one
+cover_letter:
+  # If blank, cover letter field is left empty
+  template: ""
+
+# EEO / demographic questions (many forms ask these)
+# Set to "prefer_not_to_say" to leave optional fields blank
+demographics:
+  gender: "prefer_not_to_say"
+  ethnicity: "prefer_not_to_say"
+  veteran_status: "prefer_not_to_say"
+  disability_status: "prefer_not_to_say"

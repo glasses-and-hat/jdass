@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.python-version
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Env
+.env
+*.env
+
+# Data (gitignore generated artifacts, keep structure via .gitkeep)
+applications/*/*/
+logs/*.log
+backups/*.db
+jdass.db
+
+# Resumes — never commit real resumes (add your own locally)
+resumes/*.docx
+resumes/*.pdf
+resumes/generated/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Personal configs — copy from *.example.yaml and fill in your details
+configs/applicant.yaml
+configs/form_answers.yaml
+
+# Playwright
+playwright/.auth/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Log screenshots
+logs/screenshots/

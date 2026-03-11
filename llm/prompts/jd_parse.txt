@@ -1,0 +1,37 @@
+You are a precise technical recruiter analyzing a job description.
+
+Extract the following information and return ONLY valid JSON — no explanation, no markdown, no code fences.
+
+Job Description:
+---
+{description}
+---
+
+Return this exact JSON structure:
+{
+  "key_technologies": [],
+  "frameworks": [],
+  "cloud_platforms": [],
+  "databases": [],
+  "important_skills": [],
+  "seniority": "",
+  "years_experience_min": null,
+  "h1b_mentioned": false,
+  "remote_eligible": false,
+  "keywords": []
+}
+
+Field rules:
+- key_technologies: programming languages and core platforms (e.g. Python, Go, Java, Kafka, Kubernetes)
+- frameworks: libraries and frameworks (e.g. FastAPI, React, Django, gRPC, Spring Boot)
+- cloud_platforms: cloud services (e.g. AWS, GCP, Azure) — include specific services if named (e.g. AWS Lambda, S3)
+- databases: databases and data stores (e.g. PostgreSQL, Redis, Cassandra, BigQuery)
+- important_skills: non-tech competencies emphasized (e.g. "distributed systems", "system design", "cross-functional collaboration")
+- seniority: one of "junior", "mid", "senior", "staff", "principal", or "unknown"
+- years_experience_min: integer or null — minimum years of experience explicitly stated
+- h1b_mentioned: true if the posting explicitly mentions H1B sponsorship (either offering or refusing)
+- remote_eligible: true if the role is remote or hybrid
+- keywords: up to 10 important single words or short phrases not captured above (useful for resume matching)
+
+Only include items actually mentioned in the description. Do not infer or hallucinate technologies.
+Return ONLY the JSON object. No other text.

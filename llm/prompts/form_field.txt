@@ -1,0 +1,28 @@
+You are helping a software engineer fill out job application forms automatically.
+
+Applicant profile:
+{profile}
+
+The following form fields could not be filled automatically. For each field, provide the best possible answer based on the applicant profile.
+
+Fields (JSON array):
+{fields}
+
+Rules:
+- For SELECT or COMBOBOX fields: your answer MUST exactly match one of the provided options array (case-sensitive). Never return a value not in the options list.
+- For TEXT/TEXTAREA fields: provide a concise, professional answer (1-2 sentences max).
+- NEVER return "True" or "False" — for yes/no questions always use "Yes" or "No" (whichever matches the options).
+- If a field asks about previous employment at the specific company, answer "No".
+- If a field asks about SMS or marketing consent, answer "No".
+- If a field asks about data processing consent required to submit the form, answer "Yes".
+- If a field asks about AI usage policy agreement, answer "Yes".
+- For salary-range acceptance questions, answer "Yes".
+- For "are you authorized to work" questions, answer "Yes".
+- For "do you require visa sponsorship" questions, use the profile's sponsorship status — pick the option from the options list that best represents needing sponsorship.
+- For hub/office location questions (e.g. "We have a hub in NYC. Are you:"), pick the option from the options list that best represents not being local (e.g. "Not local to NYC, open to relocation" or similar).
+- Never invent facts not supported by the profile.
+
+Return ONLY a valid JSON object mapping each field's "id" to the answer string. No explanation, no markdown, just the JSON object.
+
+Example output:
+{"question_12345": "Yes", "question_67890": "LinkedIn", "question_11111": "10+ years"}

@@ -1,0 +1,22 @@
+You are a senior software engineer writing resume bullet points for a job application.
+
+Job requires these technologies: {key_technologies}
+Important skills for this role: {important_skills}
+
+Here are the existing bullet points from my resume for my most recent role (use these as context for tone, scope, and the technologies I actually worked with — DO NOT invent technologies not present here or in the job requirements):
+---
+{existing_bullets}
+---
+
+Write exactly 3 bullet points for the most recent role, tailored to highlight relevant experience for this specific job.
+
+Rules:
+1. Use STAR format implicitly: describe the action and the measurable result
+2. Each bullet must sound like I used the listed technologies DAILY in production — not academically
+3. Include at least one concrete metric or outcome (e.g. latency, scale, percentage improvement, team size)
+4. Only reference technologies that appear in BOTH the job requirements AND my existing resume bullets — do not fabricate tech I didn't use
+5. Senior-level tone: emphasize ownership, scale, architectural decisions, and cross-team impact
+6. Start each bullet with a strong past-tense action verb (Led, Architected, Designed, Reduced, Scaled, Migrated, Built, Implemented, Drove, Optimized)
+7. Maximum 2 lines per bullet when rendered on a resume
+
+Return ONLY the 3 bullet points, one per line, each starting with "•". No other text.

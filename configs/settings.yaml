@@ -1,0 +1,88 @@
+# ── JDASS Settings ────────────────────────────────────────────────────────────
+# Edit this file to customise your search criteria.
+# All keys map directly to FilterConfig fields in core/filters.py.
+
+# ── Job filters ───────────────────────────────────────────────────────────────
+filters:
+  # Accept fully-remote jobs
+  remote_ok: true
+
+  # Accept jobs in these locations (case-insensitive substring match)
+  allowed_locations:
+    - chicago
+    - remote
+    - usa
+    - anywhere
+
+  # Seniority levels to target
+  # Options: junior, mid, senior, staff, principal, lead
+  target_seniority:
+    - mid
+    - senior
+    - staff
+    - principal
+    - lead
+
+  # If true, keep jobs with no seniority signal (ambiguous titles like "Software Engineer")
+  keep_unseniored: true
+
+  # If true, ONLY save jobs that explicitly mention H1B sponsorship
+  require_h1b: false
+
+  # If true, REJECT jobs that explicitly say "no sponsorship"
+  reject_no_sponsorship: true
+
+  # Only keep jobs posted within this many days (3 = last 3 days, 7 = last week)
+  # Set to null to disable (keep all regardless of age)
+  max_age_days: 0.5
+  # If true, keep jobs with no posted date (unknown age)
+  keep_undated: true
+
+  # Job title must contain at least one of these keywords (case-insensitive)
+  target_role_keywords:
+    - senior software engineer
+    - software engineer
+    - software developer
+    - swe
+    - sde
+    - backend engineer
+    - backend developer
+    - senior full stack
+    - senior fullstack
+    - full stack
+    - fullstack
+    - platform engineer
+    - senior platform engineer
+
+# ── LLM settings ─────────────────────────────────────────────────────────────
+llm:
+  primary_model: llama3.1:8b
+  fast_model: mistral:7b
+  embed_model: nomic-embed-text
+  base_url: http://localhost:11434
+
+# ── Application settings ──────────────────────────────────────────────────────
+application:
+  max_per_hour: 10
+  # Minimum match score to auto-apply (0-100)
+  min_score_to_apply: 70
+  # If false, all applications require manual approval
+  auto_apply: false
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+scheduler:
+  enabled: true
+  # Times are in America/Chicago timezone (24h format)
+  discover_time: "08:00"   # Run discovery daily at 8am
+  apply_time: "09:00"      # Drain application queue at 9am
+  outreach_time: "10:00"   # Generate outreach messages at 10am
+  # Look-back window for outreach — generate messages for jobs applied
+  # in the last N days (prevents re-processing old applications)
+  apply_days: 7
+  use_llm: true
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+notifications:
+  enabled: true
+  # Notify when a new job with score >= this threshold is discovered
+  notify_score_threshold: 80

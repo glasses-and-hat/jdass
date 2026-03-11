@@ -1,0 +1,83 @@
+# ── JDASS Source Configuration ────────────────────────────────────────────────
+# Configure which companies and job boards to scrape.
+#
+# Greenhouse slugs: the part after "boards.greenhouse.io/" in the URL
+#   e.g. https://boards.greenhouse.io/stripe → slug: stripe
+#
+# Lever slugs: the part after "jobs.lever.co/" in the URL
+#   e.g. https://jobs.lever.co/figma → slug: figma
+
+sources:
+
+  # ── Greenhouse ──────────────────────────────────────────────────────────────
+  greenhouse:
+    enabled: true
+    request_delay: 2.0   # seconds between requests
+    company_slugs:
+      # Tier 1 — Top targets
+      - stripe
+      - notion
+      - figma
+      - linear
+      - vercel
+      - supabase
+      - planetscale
+      - cockroachlabs
+      - datadog
+      - confluent
+      - snowflake
+      - databricks
+      # Chicago-area
+      - grubhub
+      - groupon
+      - tempus
+      - relativity
+      - cleversafe
+      - docusign
+      - expedia
+      - salesforce
+      - Capital one
+      - Here
+      - coinbase
+      - samsara
+      # Add more as needed — one slug per line
+
+  # ── Lever ────────────────────────────────────────────────────────────────────
+  lever:
+    enabled: true
+    request_delay: 2.0
+    company_slugs:
+      - netflix
+      - openai
+      - anthropic
+      - scale-ai
+      - cohere
+      - modal
+      - replit
+      - render
+      - railway
+      - turso
+      # Chicago-area
+      - cleversafe
+      - spot-robot
+      # Add more as needed
+
+  # ── HackerNews Who's Hiring ──────────────────────────────────────────────────
+  hn_hiring:
+    enabled: true
+    # 0 = current month, 1 = last month, etc.
+    months_back: 0
+
+  # ── LinkedIn (Phase 2 — Playwright-based) ────────────────────────────────────
+  linkedin:
+    enabled: false   # enable in Phase 4
+    search_queries:
+      - "Software Engineer remote"
+      - "Backend Engineer Chicago"
+      - "Senior Software Engineer remote H1B"
+    request_delay: 5.0  # be conservative with LinkedIn
+
+  # ── Wellfound (formerly AngelList) ──────────────────────────────────────────
+  wellfound:
+    enabled: false   # enable in Phase 5 (requires login)
+    request_delay: 3.0
